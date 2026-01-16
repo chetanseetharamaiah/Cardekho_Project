@@ -1,0 +1,7 @@
+The objective of this project is to build a reliable machine learning system for predicting used car prices. Real-world car listing data was collected and transformed into a structured tabular format. 
+Exploratory Data Analysis (EDA) was conducted to understand feature distributions, detect skewness, and analyze correlations among numerical variables.
+Data preprocessing included handling missing values, removing extreme outliers using IQR-based filtering, encoding categorical variables, and scaling numerical features.
+Multiple regression models including Linear Regression, Decision Tree, Random Forest, and Gradient Boosting were trained and evaluated using Mean Absolute Error (MAE) and R² score.
+Tree-based ensemble models performed better due to their ability to capture non-linear relationships and handle skewed data. 
+The best-performing model was selected and deployed using Streamlit, enabling interactive price prediction based on user inputs. 
+This project demonstrates an end-to-end applied machine learning workflow with practical relevance.
