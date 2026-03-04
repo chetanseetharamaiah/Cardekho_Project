@@ -7,17 +7,17 @@ import re
 import os
 from datetime import datetime
 import numpy as np
-from sklearn.preprocessing import LabelEncoder,StandardScaler
+from sklearn.preprocessing import LabelEncoder,StandardScaler,RobustScaler
 from sklearn.ensemble import RandomForestRegressor,GradientBoostingRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression,Ridge, Lasso
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split,cross_val_score
-from sklearn.metrics import mean_absolute_error,mean_squared_error,r2_score
+from sklearn.model_selection import train_test_split,cross_val_score,GridSearchCV
+from sklearn.metrics import mean_absolute_error,r2_score
 import joblib
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -33,10 +33,9 @@ class cardekho:
         self.csv_file_transform = 'cardekho_log.csv'
         self.dbname = 'project3_cardekho'
         self.all_cities_data = []
-        self.categorical_cols = ['City', 'BodyType', 'OwnerNo', 'OEM','Model', 'Transmission', 'FuelType']
-        self.numerical_cols = ['ModelYear', 'MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC']
+        self.categorical_cols = ['City', 'BodyType', 'OEM','Model', 'Transmission', 'FuelType']
+        self.numerical_cols= ['OwnerNo','Mileage_kmpl','CarAge','Engine_CC','MaxPower_bhp','Power_per_CC','Kms_per_year']
         
-
     def extract_files(self):  #Extracts and flattens data from multiple Excel sheets containing nested JSON.
         st.info("""
         This is Feature Extraction step which reads multiple Excel files containing nested car data,
@@ -158,6 +157,7 @@ class cardekho:
                   
                     df.to_excel(output_file, index=False)
                     st.text(f"Extracted {state} file")
+
                 st.success("Successfully extracted all the data files")
             except Exception as e:
                 st.error(f"Exception {e}")
@@ -191,25 +191,10 @@ class cardekho:
                         df.insert(0, 'City', city.upper())
                     #Then add all other columns except City
                     df = df[['City'] + [col for col in df.columns if col != 'City']]
-                    #loops thorugh evercolumn, replace nan with empty sting,every column value into string
-                    # for cname in df.columns:
-                    #     df[cname] = (
-                    #             df[cname]
-                    #             #.where(df[cname].notna(), '')  # leave blanks untouched
-                    #             .astype(str)
-                    #             .str.replace(',', '', regex=False)
-                    #             .str.strip()
-                    #             #.str.upper()
-                    #             .str.split()
-                    #             .str.join(' ')
-                                
-                    #         )
                     for cname in df.columns:
                         df[cname] = df[cname].apply(
                             lambda x: ' '.join(str(x).replace(',', '').strip().split()) if pd.notna(x) else x
                         )
-                    
-
                         
                     # Rename the files for our conveience 
                     try:
@@ -279,13 +264,6 @@ class cardekho:
                             }, inplace=True)
                     except Exception as e:
                         st.write(f"{e}")
-                    
-                    
-                                
-                                    # Handling the columns values which are similar but have different texts
-
-
-                    
                     
                     df['Insurance_Validity'] = df['Insurance_Validity'].replace({
                         'THIRD PARTY INSURANCE': 'TP',
@@ -421,7 +399,8 @@ class cardekho:
                             if number is not None and number != '':
                                 return float(number)
                             # return number even without unit
-                    
+                    df["OwnerNo"] = pd.to_numeric(df["OwnerNo"], errors="coerce")
+                    df = df[df["OwnerNo"] != 0]
                     df['Price'] = df['Price'].astype(str).str.replace('₹', '', regex=False)
                     df['Price'] = df['Price'].apply(price_calculate)
                     df['Torque_nm'] = df['Torque_nm'].replace(['NAN', 'nan', 'NaN'], np.nan)
@@ -435,6 +414,7 @@ class cardekho:
                                     r'\1-SPEED',         # replace with number-
                                     regex=True
                                     )
+                    df['GearBox'] = df['GearBox'].replace(['NAN', 'nan', 'NaN'], np.nan)
                     def remove_units(value):
                         match = re.match(r'^([\d.]+)', value)
                         return match.group(1) if match else value
@@ -453,58 +433,105 @@ class cardekho:
                     
                     df.to_excel(f'{file_name}_features_updated.xlsx', index=False)
                     self.all_cities_data.append(df)
-                
                     
+
                 df = pd.concat(self.all_cities_data, ignore_index=True)
+                try:
+                    change_to_numeric = ['OwnerNo','ModelYear','CentralVariantId','Air_Conditioner','Heater','Adjustable_Head_Lights','Low_Fuel_Warning_Light','Accessory_Power_Outlet','Digital_Odometer','Electronic_Multi_Tripmeter','Digital_Clock',
+                                             'Centeral_Locking','Child_Safety_Locks','Halogen_Headlamps','Adjustable_Seats','Anti_Lock_Braking_System','Power_Door_Locks',
+                                            'Driver_Air_Bag','Passenger_Air_Bag','Seat_Belt_Warning','Keyless_Entry','Crash_Sensor','Radio','Front_Speakers','Rear_Speakers','Bluetooth',
+                                            'Mileage_kmpl','Engine_CC','MaxPower_bhp','Torque_nm','ET_Cylinders','ET_Cylinder_Value','DC_Length_mm','DC_Width_mm','DC_Height_mm','DC_WheelBase_mm','DC_KerbWeight_kg','Seats','TurningBase_meters',
+                                            'Doors','CargoVolumn_Liters','Usb_Auxiliary_Input','Anti_Theft_Device']
+                    for col in change_to_numeric:
+                        if col in df.columns:
+                            if df[col].dtype == 'object':
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception as e:
+                    st.error(f"Exception {e}")
+                
+
                 st.success("Success full cleaned the data")
                 return df
             
-            def handle_outliers_iqr(df, numeric_cols):
-                for col in numeric_cols:
-                    # Ensure numeric
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            def feature_engineering(df):
+                current_year = datetime.now().year
 
-                    # Calculate Q1, Q3, and IQR
-                    Q1 = df[col].quantile(0.25)
-                    Q3 = df[col].quantile(0.75)
-                    IQR = Q3 - Q1
+                df["ModelYear"] = pd.to_numeric(df["ModelYear"], errors="coerce")
+                df["KmsDriven"] = pd.to_numeric(df["KmsDriven"], errors="coerce")
+                df["MaxPower_bhp"] = pd.to_numeric(df["MaxPower_bhp"], errors="coerce")
+                df["Engine_CC"] = pd.to_numeric(df["Engine_CC"], errors="coerce")
+                
+                df["CarAge"] = current_year - df["ModelYear"]
+                df["Kms_per_year"] = df["KmsDriven"] / (df["CarAge"] + 1)
+                df["Power_per_CC"] = df["MaxPower_bhp"] / df["Engine_CC"]
 
-                    # Define bounds
-                    lower_bound = Q1 - 1.5 * IQR
-                    upper_bound = Q3 + 1.5 * IQR
+                # handle invalid values created by division
+                df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-                    # Filter dataframe
-                    df = df[(df[col] >= lower_bound) & (df[col] <= upper_bound)]
+                df["CarAge"] = pd.to_numeric(df["CarAge"], errors="coerce")
+                df["Kms_per_year"] = pd.to_numeric(df["Kms_per_year"], errors="coerce")
+                df["Power_per_CC"] = pd.to_numeric(df["Power_per_CC"], errors="coerce")
+
+                # fill missing engineered values
+                df["CarAge"] = df["CarAge"].fillna(df["CarAge"].median())
+                df["Kms_per_year"] = df["Kms_per_year"].fillna(df["Kms_per_year"].median())
+                df["Power_per_CC"] = df["Power_per_CC"].fillna(df["Power_per_CC"].median())
 
                 return df
 
-            def handling_null_values(df,numerical_cols,categorical_cols):
-                                
-                try:
-                    for col in numerical_cols:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            def handle_outliers_iqr(df):
+                outlier_cols = ['MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC']
+                for col in outlier_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                df = df[df["KmsDriven"] >= 0]
+                df = df[df["Mileage_kmpl"] > 0]
+                df = df[df["Engine_CC"] > 500]
+                df = df[df["MaxPower_bhp"] > 0]
+                for col in outlier_cols:
+                    # Calculate low, high, and IQR
+                    low = df[col].quantile(0.01)
+                    high = df[col].quantile(0.99)
+                    
+                    # Filter dataframe
+                    df[col] = df[col].clip(low,high)
+                  
+                # --------- Handle ModelYear (valid year range) ----------
+                current_year = datetime.now().year
+                df["ModelYear"] = pd.to_numeric(df["ModelYear"], errors="coerce")
+                df = df[(df["ModelYear"] >= 1990) & (df["ModelYear"] <= current_year)]
+
+                return df
+
+            def handling_null_values(df,categorical_cols,categorical_binary_col):
+                for col in df.columns:
+                    if pd.api.types.is_numeric_dtype(df[col]):
                         if df[col].isnull().any():
-                            df[col] = df[col].fillna(df[col].median())
-                except Exception as e:
-                    st.write(f"Error is {e}")
-                try:
-                    for col in categorical_cols:
-                        if df[col].isnull().any():
-                            df[col] = df[col].fillna(df[col].mode()[0])
-                except Exception as e:
-                    st.write(f"error is {e}")
+                            if col in categorical_binary_col:
+                                df[col] = df[col].fillna(0)
+                            else:
+                                df[col] = df[col].fillna(df[col].median())
+                    else:
+                        if df[col].isnull().any(): 
+                            if col in categorical_cols:
+                                df[col] = df[col].fillna(df[col].mode()[0])
+                            else:
+                                df[col] = df[col].fillna("UNKNOWN")     
                 
                 st.success("Successfull handled the null values for important car features")
                 return df
 
 
-            
+            categorical_binary_col = ['Air_Conditioner','Heater','Adjustable_Head_Lights','Low_Fuel_Warning_Light','Accessory_Power_Outlet','Digital_Odometer','Electronic_Multi_Tripmeter','Digital_Clock',
+                                    'Centeral_Locking','Child_Safety_Locks','Halogen_Headlamps','Adjustable_Seats','Anti_Lock_Braking_System','Power_Door_Locks',
+                                    'Driver_Air_Bag','Passenger_Air_Bag','Seat_Belt_Warning','Keyless_Entry','Crash_Sensor','Radio','Front_Speakers','Rear_Speakers','Bluetooth',
+                                    'Usb_Auxiliary_Input','Anti_Theft_Device']
             
             df = data_cleaning()
-            df = handling_null_values(df,self.numerical_cols,self.categorical_cols)
-            df = handle_outliers_iqr(df,self.numerical_cols)
+            df = handling_null_values(df,self.categorical_cols,categorical_binary_col)
+            df = handle_outliers_iqr(df)
+            df = feature_engineering(df)
             
-            change_to_numeric = ['OwnerNo','ModelYear','CentralVariantId','Price','KmsDriven','Mileage_kmpl','Engine_CC','MaxPower_bhp',
+            change_to_numeric = ['OwnerNo','ModelYear','CarAge','Kms_per_year','Power_per_CC','CentralVariantId','Price','KmsDriven','Mileage_kmpl','Engine_CC','MaxPower_bhp',
                                      'Torque_nm','ET_Cylinders','ET_Cylinder_Value','DC_Length_mm','DC_Width_mm','DC_Height_mm','DC_WheelBase_mm',
                                      'DC_KerbWeight_kg','Seats','TurningBase_meters','Doors','CargoVolumn_Liters',
                                      'Heater','Usb_Auxiliary_Input','Anti_Theft_Device','Air_Conditioner','Adjustable_Head_Lights',
@@ -623,7 +650,10 @@ class cardekho:
                                             Radio int,
                                             Front_Speakers int,
                                             Rear_Speakers int,
-                                            Bluetooth int
+                                            Bluetooth int,
+                                            CarAge int,
+                                            Power_per_CC decimal(12,9),
+                                            Kms_per_year decimal(12,6)
                                             )"""
             try:
                 st.write("creating a Table in MySql")
@@ -654,16 +684,15 @@ class cardekho:
         """)
 
         with st.spinner("Training models using proper ML workflow..."):
-
-            target = "Price"
-
-
+           
             df = pd.read_csv(self.csv_file)
-            target = "Price"
-
+            df["Price_log"] = np.log1p(df["Price"])
+            target = "Price_log"
+            self.categorical_cols = ['City', 'BodyType', 'OEM','Model', 'Transmission', 'FuelType']
+            self.numerical_cols= ['OwnerNo','MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC','CarAge','Power_per_CC','Kms_per_year']
             X = df[self.categorical_cols + self.numerical_cols]
             y = df[target]
-
+            
             X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42)
 
@@ -671,13 +700,10 @@ class cardekho:
             X_test_cat = pd.get_dummies(X_test[self.categorical_cols])
             X_test_cat = X_test_cat.reindex(columns=X_train_cat.columns, fill_value=0)
 
-            scaler = StandardScaler()
-            X_train_num = scaler.fit_transform(X_train[self.numerical_cols])
-            X_test_num = scaler.transform(X_test[self.numerical_cols])
+            X_train_num = X_train[self.numerical_cols].copy()
+            X_test_num = X_test[self.numerical_cols].copy()
 
-            X_train_num = pd.DataFrame(X_train_num, columns=self.numerical_cols, index=X_train.index)
-            X_test_num = pd.DataFrame(X_test_num, columns=self.numerical_cols, index=X_test.index)
-
+            
             X_train_final = pd.concat([X_train_cat, X_train_num], axis=1)
             X_test_final = pd.concat([X_test_cat, X_test_num], axis=1)
 
@@ -685,34 +711,89 @@ class cardekho:
                 "LinearRegression": LinearRegression(),
                 "DecisionTree": DecisionTreeRegressor(random_state=42),
                 "RandomForest": RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
-                "GradientBoosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42)
+                "GradientBoosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=3, random_state=42),
+                "Ridge": Ridge(),
+                "Lasso": Lasso(),
                     }
+            
                     
             best_model = None
             best_model_name = None
-            best_mae = float("inf")
-            best_r2 = None
-
+            best_cv_mae = float("inf")
+            
+            param_grids = {"RandomForest": {"n_estimators": [100, 200],"max_depth": [None, 10, 20],"min_samples_split": [2, 5]},
+                           "Ridge": {"alpha": [0.01, 0.1, 1, 10, 50, 100]},
+                           "Lasso": {"alpha": [0.0001, 0.001, 0.01, 0.1, 1, 10]}
+                        }
+            
             for name, model in models.items():
-                model.fit(X_train_final, y_train)
-                y_pred = model.predict(X_test_final)
+                
+                if name in ['LinearRegression','Ridge','Lasso']:
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train_num)
+                    X_test_scaled = scaler.transform(X_test_num)
 
-                mae = mean_absolute_error(y_test, y_pred)
-                r2 = r2_score(y_test, y_pred)
+                    X_train_num_scaled = pd.DataFrame(X_train_scaled,columns=self.numerical_cols,index=X_train_num.index)
+                    X_test_num_scaled = pd.DataFrame(X_test_scaled,columns=self.numerical_cols,index=X_test_num.index)
 
-                if mae < best_mae:
-                    best_mae = mae
-                    best_model = model
+                    X_train_used=pd.concat([X_train_cat,X_train_num_scaled],axis=1)
+                    X_test_used=pd.concat([X_test_cat,X_test_num_scaled],axis=1)
+                    
+                else:
+                    scaler = None
+                    X_train_used = X_train_final
+                    X_test_used = X_test_final
+                    
+                if name in param_grids:
+                    grid = GridSearchCV(estimator=model,param_grid=param_grids[name],cv=5,scoring="neg_mean_absolute_error",n_jobs=-1)
+                    grid.fit(X_train_used,y_train)
+                    cv_mae = -grid.best_score_
+                    tuned_model = grid.best_estimator_
+                else:
+                    cv_score = cross_val_score(model,X_train_used,y_train,cv=5,scoring="neg_mean_absolute_error",n_jobs=-1)
+                    cv_mae = -cv_score.mean()
+                    tuned_model = model
+
+                if cv_mae < best_cv_mae:
+                    best_cv_mae = cv_mae
+                    best_model = tuned_model
                     best_model_name = name
-                    best_r2 = r2
+                    best_scaler = scaler
+                    scaler_required = (scaler is not None)
+                    
+
+            if scaler_required:
+                X_train_num_scaled = best_scaler.fit_transform(X_train_num)
+                X_test_num_scaled = best_scaler.transform(X_test_num)
+
+                X_train_num_scaled = pd.DataFrame(X_train_num_scaled, columns=self.numerical_cols, index=X_train_num.index)
+                X_test_num_scaled = pd.DataFrame(X_test_num_scaled, columns=self.numerical_cols, index=X_test_num.index)
+
+                X_train_final_used = pd.concat([X_train_cat, X_train_num_scaled], axis=1)
+                X_test_final_used = pd.concat([X_test_cat, X_test_num_scaled], axis=1)
+            else:
+                X_train_final_used = X_train_final
+                X_test_final_used = X_test_final
+                    
+            
+            best_model.fit(X_train_final_used, y_train)
+            y_pred = best_model.predict(X_test_final_used)
+
+            
+            best_mae = mean_absolute_error(y_test, y_pred)
+            best_r2 = r2_score(y_test, y_pred)
 
             st.success(f"Best Model Selected: {best_model_name}")
+            st.success(f"Best CV_mae: {best_cv_mae:.2f}")
             st.write(f"Best MAE: {best_mae:.2f}")
             st.write(f"Best R² Score: {best_r2:.2f}")
 
             joblib.dump(best_model, "car_price_model.pkl")
             joblib.dump(X_train_final.columns, "model_features.pkl")
-            joblib.dump(scaler, "scaler.pkl")
+            joblib.dump(scaler_required, "scaler_required.pkl")
+            
+            if scaler_required:
+                joblib.dump(best_scaler, "scaler.pkl")
  
     def prediction(self):
         st.info("""This function provides an interactive car price prediction interface using Streamlit.
@@ -737,8 +818,12 @@ class cardekho:
             real-world car listings, trained machine learning models, and an intuitive user interface.
         """)
         model_features = joblib.load("model_features.pkl")
-        scaler = joblib.load("scaler.pkl")
         model = joblib.load("car_price_model.pkl")
+        scaler_required = joblib.load("scaler_required.pkl")
+        
+        scaler = None
+        if scaler_required:
+            scaler = joblib.load("scaler.pkl")
         
         bk_img_path = "C:/Users/cheth/GUVI/Project_3/Dataset/white.png"
         #Read and encode image to base64
@@ -879,41 +964,41 @@ class cardekho:
             
             df_model_year = df_owner[df_owner['ModelYear'] == op6]
         def align_dtypes(user_df):
-            categorical_cols = ['City','BodyType','OwnerNo','OEM','Model','Transmission','FuelType']
-            numerical_cols = ['ModelYear','MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC']
+            
 
-            for col in categorical_cols:
+            for col in self.categorical_cols:
                 user_df[col] = user_df[col].astype(str)
 
-            for col in numerical_cols:
+            for col in self.numerical_cols:
                 user_df[col] = pd.to_numeric(user_df[col], errors='coerce')
 
             return user_df
         def preprocess(user_df,model):
-            #df = user_df.copy()
-            categorical_cols = ['City','BodyType','OwnerNo','OEM','Model','Transmission','FuelType']
-            numerical_cols = ['ModelYear','MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC']
-
+            
             #Encode categorical columns
-            user_cat = pd.get_dummies(user_df[categorical_cols])
+            user_cat = pd.get_dummies(user_df[self.categorical_cols])
+            user_num = user_df[self.numerical_cols].copy()
 
             #Scale numeric cols
-            user_num = scaler.transform(user_df[numerical_cols])
-            user_num = pd.DataFrame(user_num, columns=numerical_cols)
+            if scaler_required and scaler is not None:
+                user_num_scaled = scaler.transform(user_num)
+                user_num = pd.DataFrame(user_num_scaled, columns=self.numerical_cols)
 
             #combining numeric and categorical columns
             X_user = pd.concat([user_cat, user_num], axis=1)
 
             # aligning the columns
             # Takes model_features as the master column list
-            # Reorders X_user columns to match this list
+            # Reorders X_user columns to match this listnumerical_cols
             # Adds missing columns → fills them with 0
             # Drops extra columns not used in training 
             X_user = X_user.reindex(columns=model_features, fill_value=0)
 
             #predictionPredict
             prediction = model.predict(X_user)[0]
-
+            # if best_target_log:
+            prediction = np.expm1(prediction)
+            
             return round(prediction, 2)
             
         
@@ -925,10 +1010,12 @@ class cardekho:
             st.write(f"with the selected feature we have {count} cars avilable")
             for idx, row in df_copy.iterrows():
                 TRANSMISSION = row['Transmission']
-                KM_DRIVEN = row['KmsDriven']
                 MILEAGE = row['Mileage_kmpl']
                 ENGINE = row['Engine_CC']
                 POWER = row['MaxPower_bhp']
+                CarAge = row['CarAge']
+                Kms_per_year= row["Kms_per_year"]
+                Power_per_CC=row["Power_per_CC"]
                 
                 user_input = {
                     'City': CITY,
@@ -936,13 +1023,14 @@ class cardekho:
                     'OwnerNo': OWNER,
                     'OEM': OEM,
                     'Model': MODEL,
-                    'ModelYear': YEAR,
                     'FuelType': FUELTYPE,
-                    'KmsDriven': KM_DRIVEN,
                     'Transmission': TRANSMISSION,
                     'Mileage_kmpl': MILEAGE,
                     'Engine_CC': ENGINE,
                     'MaxPower_bhp': POWER,
+                    'CarAge':CarAge,
+                    'Kms_per_year':Kms_per_year,
+                    'Power_per_CC':Power_per_CC
                     
                 }
                 user_df = pd.DataFrame([user_input])
@@ -953,10 +1041,12 @@ class cardekho:
                     
         else:  
             TRANSMISSION = df_model_year['Transmission'].iloc[0]
-            KM_DRIVEN = df_model_year['KmsDriven'].iloc[0]
             MILEAGE = df_model_year['Mileage_kmpl'].iloc[0]
             ENGINE = df_model_year['Engine_CC'].iloc[0]
             POWER = df_model_year['MaxPower_bhp'].iloc[0]
+            CarAge = df_model_year['CarAge'].iloc[0]
+            Kms_per_year= df_model_year["Kms_per_year"].iloc[0]
+            Power_per_CC=df_model_year["Power_per_CC"].iloc[0]
             
             user_input = {
                 'City': CITY,
@@ -964,13 +1054,14 @@ class cardekho:
                 'OwnerNo': OWNER,
                 'OEM': OEM,
                 'Model': MODEL,
-                'ModelYear': YEAR,
                 'FuelType': FUELTYPE,
-                'KmsDriven': KM_DRIVEN,
                 'Transmission': TRANSMISSION,
                 'Mileage_kmpl': MILEAGE,
                 'Engine_CC': ENGINE,
                 'MaxPower_bhp': POWER,
+                'CarAge':CarAge,
+                'Kms_per_year':Kms_per_year,
+                'Power_per_CC':Power_per_CC
                 
             }  
             
@@ -983,40 +1074,91 @@ class cardekho:
             st.dataframe(df_model_year)
 
     def descriptive_statistics(self):
+        import matplotlib.ticker as ticker
         df = pd.read_csv(self.csv_file)
-        st.write(f"Total Numeric Columns: **{len(self.numerical_cols)}**")
-        st.write(self.numerical_cols)
+        target_col = "Price"
+
         
-        st.subheader("Statistics Analysis")
-        st.dataframe(df[self.categorical_cols].describe(include='all'))
-        st.dataframe(df[self.numerical_cols].describe(include='all'))
-        st.subheader("Skewness Analysis")
-        st.dataframe(df[self.numerical_cols].skew())
-        st.subheader("Kurtosis")
-        st.dataframe(df[self.numerical_cols].kurtosis())
+        # ---------------------- Missing Values ----------------------
+        st.write("Total Rows ", len(df))
+        st.subheader("Missing Values Analysis")
+        missing = df.isnull().sum()
+        missing_percent = (missing / len(df)) * 100
+        missing_df = pd.DataFrame({"Missing Count": missing, "Missing %": missing_percent})
+        missing_df = missing_df[missing_df["Missing Count"] > 0].sort_values("Missing %", ascending=False)
 
-        for col in self.numerical_cols:
-            
-            plt.figure(figsize=(5,4))
-            sns.histplot(df[col],kde=True)
-            plt.xlabel(col)
-            plt.ylabel("count")
-            st.pyplot(plt)
-            plt.clf()
+        if missing_df.empty:
+            st.success("No missing values found!")
+        else:
+            st.dataframe(missing_df)
 
-            plt.figure(figsize=(6, 2))
-            sns.boxplot(x = df[col])
-            plt.xlabel(col)
-            plt.ylabel("count")
-            st.pyplot(plt)
-            plt.clf()
+        st.subheader("Descriptive Statistics")
+
+        st.write("Numerical Columns Summary")
+        st.dataframe(df[self.numerical_cols].describe())
+
+        st.write("Categorical Columns Summary")
+        st.dataframe(df[self.categorical_cols].describe(include="all"))
+
+        st.subheader("Skewness & Kurtosis")
+
+        skew_df = pd.DataFrame(df[self.numerical_cols].skew(), columns=["Skewness"])
+        kurt_df = pd.DataFrame(df[self.numerical_cols].kurtosis(), columns=["Kurtosis"])
+
+        st.write("Skewness")
+        st.dataframe(skew_df.sort_values("Skewness", ascending=False))
+
+        st.write("Kurtosis")
+        st.dataframe(kurt_df.sort_values("Kurtosis", ascending=False))
+
+        st.subheader("Numeric Feature Distribution (Histogram + Boxplot)")
+
+        selected_num_col = st.selectbox("Select Numeric Column", self.numerical_cols)
+
+        # Histogram
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.histplot(df[selected_num_col], kde=True, ax=ax)
+        ax.set_title(f"Histogram of {selected_num_col}")
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Boxplot
+        fig, ax = plt.subplots(figsize=(6, 2))
+        sns.boxplot(x=df[selected_num_col], ax=ax)
+        ax.set_title(f"Boxplot of {selected_num_col}")
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.subheader("Categorical Feature Analysis (Count Plot)")
+
+        selected_cat_col = st.selectbox("Select Categorical Column", self.categorical_cols)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        df[selected_cat_col].value_counts().head(15).plot(kind="bar", ax=ax)
+        ax.set_title(f"Top Categories in {selected_cat_col}")
+        ax.set_xlabel(selected_cat_col)
+        ax.set_ylabel("Count")
+        st.pyplot(fig)
+        plt.close(fig)
+
+
+        if target_col in df.columns:
+            st.subheader(f"Scatter Plot: {target_col} vs Numeric Features")
+
+            scatter_col = st.selectbox("Select Feature for Scatter Plot", self.numerical_cols)
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.scatterplot(x=df[scatter_col], y=df[target_col], ax=ax)
             
+            ax.set_title(f"{target_col} vs {scatter_col}")
+            st.pyplot(fig)
+            plt.close(fig)
 
         def plot_correlation_all_numeric():
             target = 'Price'
             
             # Compute correlation matrix
-            corr = df[self.numerical_cols].corr()
+            corr = df[self.numerical_cols + ["Price"]].corr()
 
             # Plot heatmap
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -1027,10 +1169,6 @@ class cardekho:
             
         plot_correlation_all_numeric()
         
-        
-            
-    
-
 
     
 project = cardekho()
@@ -1081,20 +1219,14 @@ if "page" not in st.session_state:
 
 d = st.sidebar.header("Welcome!")
 if st.session_state.page == "home":
+     
      st.markdown(
          """
             <h1 style='text-align:center; color:#0078FF; font-size:50px;'>🚗Welcome the CarDekho Project 🚗</h1>
             <h2 style = 'text-align:center; color:black; front-sise:40px;margin-top:0px;'> Please select the options avialble </h2>
             """,
             unsafe_allow_html=True)
-    #st.title("Welcome the CarDekho Project")
-    #st.header("Please select the options avialble")
-    
-
-
-# ------------------------------------
-# PREDICT BEST PRICE PAGE
-# ------------------------------------
+     
 elif st.session_state.page == "predict_best_price":
 
     
@@ -1124,44 +1256,6 @@ if d:
     if option5:
         st.session_state.page = "descriptive_statistics"
     
-
-#bk_img_path = "C:/Users/cheth/GUVI/Project_3/Dataset/Bkgroud_image.jpg"
-
-# Read and encode image to base64
-# with open(bk_img_path, "rb") as f:
-#     data = f.read()
-# encoded_image = base64.b64encode(data).decode()
-
-# # Set background using HTML + CSS
-# st.markdown(
-#     f"""
-#     <style>
-#     .stApp {{
-        
-#         background-image: url("data:image/png;base64,{encoded_image}");
-#         background-size: cover;
-#         background-position: center;
-#         background-repeat: no-repeat;
-        
-#     }}
-#     </style>
-#     """,
-#     unsafe_allow_html=True
-# )
-# st.markdown(
-#     "<h1 style='text-align:center; color:#0078FF; font-size:50px;'>🚗 Welcome to CarDekho 🚗</h1>",
-#     unsafe_allow_html=True
-# )
-
-# image_path = "C:/Users/cheth/GUVI/Project_3/Dataset/cardekho.png"
-# col1, col2, col3 = st.columns([2,2,1])
-# with col2:
-#     st.image(image_path, width=200)
-
-# st.markdown(
-#     "<h3 style='text-align:center; color:#0078FF; font-size:20px;'>India's Fast Selling Cars</h3>",
-#     unsafe_allow_html=True
-# )
 
 if 'page' not in st.session_state:
     st.session_state.page = 'home'  # Default to home page
