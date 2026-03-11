@@ -12,12 +12,13 @@ from sklearn.ensemble import RandomForestRegressor,GradientBoostingRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
+from scipy.stats import zscore
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LinearRegression,Ridge, Lasso
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split,cross_val_score,GridSearchCV
-from sklearn.metrics import mean_absolute_error,r2_score
+from sklearn.metrics import mean_absolute_error,r2_score,mean_squared_error
 import joblib
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -450,8 +451,43 @@ class cardekho:
                     st.error(f"Exception {e}")
                 
 
-                st.success("Success full cleaned the data")
+                st.write("Success full cleaned the data")
                 return df
+            def check_skewness(df):
+                target_col = "Price"
+
+        
+                # ---------------------- Missing Values ----------------------
+                st.write("Total Rows ", len(df))
+                st.subheader("Missing Values Analysis")
+                missing = df.isnull().sum()
+                missing_percent = (missing / len(df)) * 100
+                missing_df = pd.DataFrame({"Missing Count": missing, "Missing %": missing_percent})
+                missing_df = missing_df[missing_df["Missing Count"] > 0].sort_values("Missing %", ascending=False)
+
+                if missing_df.empty:
+                    st.write("No missing values found!")
+                else:
+                    st.dataframe(missing_df)
+
+                st.subheader("Descriptive Statistics")
+
+                st.write("Numerical Columns Summary")
+                st.dataframe(df[self.numerical_cols].describe())
+
+                st.write("Categorical Columns Summary")
+                st.dataframe(df[self.categorical_cols].describe(include="all"))
+
+                st.subheader("Skewness & Kurtosis")
+
+                skew_df = pd.DataFrame(df[self.numerical_cols].skew(), columns=["Skewness"])
+                kurt_df = pd.DataFrame(df[self.numerical_cols].kurtosis(), columns=["Kurtosis"])
+
+                st.write("Skewness")
+                st.dataframe(skew_df.sort_values("Skewness", ascending=False))
+
+                st.write("Kurtosis")
+                st.dataframe(kurt_df.sort_values("Kurtosis", ascending=False))
             
             def feature_engineering(df):
                 current_year = datetime.now().year
@@ -489,16 +525,50 @@ class cardekho:
                 df = df[df["MaxPower_bhp"] > 0]
                 for col in outlier_cols:
                     # Calculate low, high, and IQR
-                    low = df[col].quantile(0.01)
-                    high = df[col].quantile(0.99)
-                    
+                    # low = df[col].quantile(0.01)
+                    # high = df[col].quantile(0.99)
+                    Q1 = df[col].quantile(0.25)
+                    Q3 = df[col].quantile(0.75)
+
+                    IQR = Q3 - Q1
+
+                    lower = Q1 - 1.5 * IQR
+                    upper = Q3 + 1.5 * IQR
                     # Filter dataframe
-                    df[col] = df[col].clip(low,high)
+                    #df[col] = df[col].clip(low,high)
+                    df[col] = df[col].clip(lower,upper)
                   
                 # --------- Handle ModelYear (valid year range) ----------
                 current_year = datetime.now().year
                 df["ModelYear"] = pd.to_numeric(df["ModelYear"], errors="coerce")
                 df = df[(df["ModelYear"] >= 1990) & (df["ModelYear"] <= current_year)]
+
+                return df
+
+            def handle_outliers_zscore(df):
+
+                outlier_cols = ['MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC']
+
+                # Convert columns to numeric
+                for col in outlier_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                # Domain cleaning (same as your previous logic)
+                df = df[df["KmsDriven"] >= 0]
+                df = df[df["Mileage_kmpl"] > 0]
+                df = df[df["Engine_CC"] > 500]
+                df = df[df["MaxPower_bhp"] > 0]
+
+                # -------- Z-Score Outlier Handling --------
+                for col in outlier_cols:
+                    z_scores = np.abs(zscore(df[col]))
+                    df = df[z_scores < 3]   # Keep values within 3 standard deviations
+
+                # -------- Handle ModelYear ----------
+                current_year = datetime.now().year
+                df["ModelYear"] = pd.to_numeric(df["ModelYear"], errors="coerce")
+                df = df[(df["ModelYear"] >= 1990) & (df["ModelYear"] <= current_year)]
+
 
                 return df
 
@@ -517,7 +587,7 @@ class cardekho:
                             else:
                                 df[col] = df[col].fillna("UNKNOWN")     
                 
-                st.success("Successfull handled the null values for important car features")
+                st.write("Successfull handled the null values for important car features")
                 return df
 
 
@@ -528,8 +598,15 @@ class cardekho:
             
             df = data_cleaning()
             df = handling_null_values(df,self.categorical_cols,categorical_binary_col)
-            df = handle_outliers_iqr(df)
             df = feature_engineering(df)
+            st.header("Descriptive analysis before handling outliers")
+            check_skewness(df)
+
+            #df = handle_outliers_iqr(df)
+            df = handle_outliers_zscore(df)
+            st.header("Descriptive analysis After handling outliers")
+            check_skewness(df)
+            
             
             change_to_numeric = ['OwnerNo','ModelYear','CarAge','Kms_per_year','Power_per_CC','CentralVariantId','Price','KmsDriven','Mileage_kmpl','Engine_CC','MaxPower_bhp',
                                      'Torque_nm','ET_Cylinders','ET_Cylinder_Value','DC_Length_mm','DC_Width_mm','DC_Height_mm','DC_WheelBase_mm',
@@ -690,6 +767,7 @@ class cardekho:
             target = "Price_log"
             self.categorical_cols = ['City', 'BodyType', 'OEM','Model', 'Transmission', 'FuelType']
             self.numerical_cols= ['OwnerNo','MaxPower_bhp','KmsDriven','Mileage_kmpl','Engine_CC','CarAge','Power_per_CC','Kms_per_year']
+            
             X = df[self.categorical_cols + self.numerical_cols]
             y = df[target]
             
@@ -753,6 +831,26 @@ class cardekho:
                     cv_score = cross_val_score(model,X_train_used,y_train,cv=5,scoring="neg_mean_absolute_error",n_jobs=-1)
                     cv_mae = -cv_score.mean()
                     tuned_model = model
+                #------------------------------------------------------------------------------------
+                tuned_model.fit(X_train_used, y_train)
+                y_pred_loop = tuned_model.predict(X_test_used)
+
+                # Convert log predictions back to actual prices
+                y_pred_actual_loop = np.expm1(y_pred_loop)
+                y_test_actual_loop = np.expm1(y_test)
+
+                mae_loop = mean_absolute_error(y_test_actual_loop, y_pred_actual_loop)
+                mse_loop = mean_squared_error(y_test_actual_loop, y_pred_actual_loop)
+                rmse_loop = np.sqrt(mse_loop)
+                r2_loop = r2_score(y_test_actual_loop, y_pred_actual_loop)
+
+                st.write(f"Model: {name}")
+                st.write(f"CV MAE: {cv_mae:.2f}")
+                st.write(f"MAE: {mae_loop:.2f}")
+                st.write(f"MSE: {mse_loop:.2f}")
+                st.write(f"RMSE: {rmse_loop:.2f}")
+                st.write(f"R2: {r2_loop:.2f}")
+                st.write("--------------------------------------------------")
 
                 if cv_mae < best_cv_mae:
                     best_cv_mae = cv_mae
@@ -779,15 +877,22 @@ class cardekho:
             best_model.fit(X_train_final_used, y_train)
             y_pred = best_model.predict(X_test_final_used)
 
+            y_pred_actual = np.expm1(y_pred)
+            y_test_actual = np.expm1(y_test)
+
             
-            best_mae = mean_absolute_error(y_test, y_pred)
-            best_r2 = r2_score(y_test, y_pred)
+            best_mae = mean_absolute_error(y_test_actual, y_pred_actual)
+            best_r2 = r2_score(y_test_actual, y_pred_actual)
+            best_mse = mean_squared_error(y_test_actual, y_pred_actual)
+            rmse = np.sqrt(best_mse)
 
             st.success(f"Best Model Selected: {best_model_name}")
             st.success(f"Best CV_mae: {best_cv_mae:.2f}")
             st.write(f"Best MAE: {best_mae:.2f}")
+            st.write(f"Best MSE: {best_mse:.2f}")
+            st.write(f"Best rmse: {rmse:.2f}")
             st.write(f"Best R² Score: {best_r2:.2f}")
-
+            
             joblib.dump(best_model, "car_price_model.pkl")
             joblib.dump(X_train_final.columns, "model_features.pkl")
             joblib.dump(scaler_required, "scaler_required.pkl")
@@ -1078,39 +1183,6 @@ class cardekho:
         df = pd.read_csv(self.csv_file)
         target_col = "Price"
 
-        
-        # ---------------------- Missing Values ----------------------
-        st.write("Total Rows ", len(df))
-        st.subheader("Missing Values Analysis")
-        missing = df.isnull().sum()
-        missing_percent = (missing / len(df)) * 100
-        missing_df = pd.DataFrame({"Missing Count": missing, "Missing %": missing_percent})
-        missing_df = missing_df[missing_df["Missing Count"] > 0].sort_values("Missing %", ascending=False)
-
-        if missing_df.empty:
-            st.success("No missing values found!")
-        else:
-            st.dataframe(missing_df)
-
-        st.subheader("Descriptive Statistics")
-
-        st.write("Numerical Columns Summary")
-        st.dataframe(df[self.numerical_cols].describe())
-
-        st.write("Categorical Columns Summary")
-        st.dataframe(df[self.categorical_cols].describe(include="all"))
-
-        st.subheader("Skewness & Kurtosis")
-
-        skew_df = pd.DataFrame(df[self.numerical_cols].skew(), columns=["Skewness"])
-        kurt_df = pd.DataFrame(df[self.numerical_cols].kurtosis(), columns=["Kurtosis"])
-
-        st.write("Skewness")
-        st.dataframe(skew_df.sort_values("Skewness", ascending=False))
-
-        st.write("Kurtosis")
-        st.dataframe(kurt_df.sort_values("Kurtosis", ascending=False))
-
         st.subheader("Numeric Feature Distribution (Histogram + Boxplot)")
 
         selected_num_col = st.selectbox("Select Numeric Column", self.numerical_cols)
@@ -1271,6 +1343,8 @@ elif st.session_state.page == 'predict_best_price':
     project.prediction()
 elif st.session_state.page == 'descriptive_statistics':
     project.descriptive_statistics()
+
+
 
 
 
